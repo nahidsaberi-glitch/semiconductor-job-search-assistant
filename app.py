@@ -1,7 +1,5 @@
 import pandas as pd
 import streamlit as st
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
 
 from config import TARGET_COMPANIES, CAREER_PATHS
 from export.excel import to_excel_bytes
@@ -11,6 +9,7 @@ from career_connectors.native import search_native_company, companies_with_nativ
 from resume.parser import extract_resume_text
 from resume.scorer import add_scores, has_excluded_keywords, is_bay_area
 from utils.secrets import get_secret
+from utils.parallel import run_parallel
 
 st.set_page_config(page_title="Semiconductor Career Assistant", page_icon="🔎", layout="wide")
 
@@ -136,28 +135,23 @@ with tab1:
                 # Step 1 upgrade: search native company feeds in parallel.
                 if use_company_sites:
                     native_tasks = [(company, query) for query in queries for company in selected_companies]
-                    total_tasks = len(native_tasks)
 
-                    if total_tasks:
-                        completed = 0
-                        max_workers = min(12, total_tasks)
-                        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                            future_to_task = {
-                                executor.submit(_search_native, task): task
-                                for task in native_tasks
-                            }
+                    def _update_native_progress(completed, total, task):
+                        progress_text.write(f"Searching official company feeds... {completed}/{total}")
+                        progress_bar.progress(completed / total)
 
-                            for future in as_completed(future_to_task):
-                                company, query = future_to_task[future]
-                                completed += 1
-                                progress_text.write(f"Searching official company feeds... {completed}/{total_tasks}")
-                                progress_bar.progress(completed / total_tasks)
+                    native_results, native_errors = run_parallel(
+                        native_tasks,
+                        _search_native,
+                        max_workers=12,
+                        progress_callback=_update_native_progress,
+                    )
 
-                                try:
-                                    result_company, result_query, jobs = future.result()
-                                    all_jobs.extend(jobs)
-                                except Exception as e:
-                                    search_errors.append(f"{company} native connector failed for '{query}': {e}")
+                    for _company, _query, jobs in native_results:
+                        all_jobs.extend(jobs)
+
+                    for msg in native_errors:
+                        search_errors.append(f"Native connector failed: {msg}")
 
             progress_text.empty()
             progress_bar.empty()
